@@ -57,11 +57,17 @@ class InitOperation extends GraphQLSocketMessage {
     final Map<String, dynamic> jsonMap = <String, dynamic>{};
     jsonMap['type'] = type;
 
+//     if (payload != null) {
+//       jsonMap['payload'] = json.encode(payload);
+//     }
+
+//     return json.encode(jsonMap);    
+
     if (payload != null) {
-      jsonMap['payload'] = json.encode(payload);
+      jsonMap['payload'] = payload;
     }
 
-    return json.encode(jsonMap);
+    return jsonMap;
   }
 }
 
