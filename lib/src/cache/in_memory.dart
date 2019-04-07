@@ -5,10 +5,69 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
-class InMemoryCache {
+import 'package:graphql_flutter/src/cache/cache.dart';
+
+class InMemoryCache implements Cache {
+  InMemoryCache({
+    this.customStorageDirectory,
+  });
+
+  /// A directory to be used for storage.
+  /// This is used for testing, on regular usage
+  /// 'path_provider' will provide the storage directory.
+  final Directory customStorageDirectory;
+
   HashMap<String, dynamic> _inMemoryCache = HashMap<String, dynamic>();
+  bool _writingToStorage = false;
+
+  /// Reads an entity from the internal HashMap.
+  @override
+  dynamic read(String key) {
+    if (_inMemoryCache.containsKey(key)) {
+      return _inMemoryCache[key];
+    }
+
+    return null;
+  }
+
+  /// Writes an entity to the internal HashMap.
+  @override
+  void write(String key, dynamic value) {
+    if (_inMemoryCache.containsKey(key) &&
+        _inMemoryCache[key] is Map &&
+        value != null &&
+        value is Map) {
+      // Avoid overriding a superset with a subset of a field (#155)
+      _inMemoryCache[key].addAll(value);
+    } else {
+      _inMemoryCache[key] = value;
+    }
+  }
+
+  /// Saves the internal HashMap to a file.
+  @override
+  Future<void> save() async {
+    await _writeToStorage();
+  }
+
+  /// Restores the internal HashMap to a file.
+  @override
+  Future<void> restore() async {
+    _inMemoryCache = await _readFromStorage();
+  }
+
+  /// Clears the internal HashMap.
+  @override
+  void reset() {
+    _inMemoryCache.clear();
+  }
 
   Future<String> get _localStoragePath async {
+    if (customStorageDirectory != null) {
+      // Used for testing
+      return customStorageDirectory.path;
+    }
+
     final Directory directory = await getApplicationDocumentsDirectory();
 
     return directory.path;
@@ -21,16 +80,31 @@ class InMemoryCache {
   }
 
   Future<dynamic> _writeToStorage() async {
-    final File file = await _localStorageFile;
-    IOSink sink = file.openWrite();
+    if (_writingToStorage) {
+      return;
+    }
 
-    _inMemoryCache.forEach((key, value) {
-      sink.writeln(json.encode([key, value]));
-    });
+    _writingToStorage = true;
 
-    sink.close();
+    // Catching errors to avoid locking forever.
+    // Maybe the device couldn't write in the past
+    // but it may in the future.
+    try {
+      final File file = await _localStorageFile;
+      final IOSink sink = file.openWrite();
+      _inMemoryCache.forEach((String key, dynamic value) {
+        sink.writeln(json.encode(<dynamic>[key, value]));
+      });
 
-    return sink.done;
+      await sink.close();
+
+      _writingToStorage = false;
+    } catch (err) {
+      _writingToStorage = false;
+
+      rethrow;
+    }
+    return;
   }
 
   Future<HashMap<String, dynamic>> _readFromStorage() async {
@@ -39,21 +113,22 @@ class InMemoryCache {
       final HashMap<String, dynamic> storedHashMap = HashMap<String, dynamic>();
 
       if (file.existsSync()) {
-        Stream<dynamic> inputStream = file.openRead();
+        final Stream<List<int>> inputStream = file.openRead();
 
-        inputStream
+        await for (String line in inputStream
             .transform(utf8.decoder) // Decode bytes to UTF8.
-            .transform(LineSplitter()) // Convert stream to individual lines.
-            .listen((String line) {
-          final List keyAndValue = json.decode(line);
-
+            .transform(
+              const LineSplitter(),
+            )) {
+          final List<dynamic> keyAndValue = json.decode(line);
           storedHashMap[keyAndValue[0]] = keyAndValue[1];
-        });
+        }
       }
 
       return storedHashMap;
     } on FileSystemException {
-      // TODO: handle No such file
+      // TODO: handle no such file
+      print('Can\'t read file from storage, returning an empty HashMap.');
 
       return HashMap<String, dynamic>();
     } catch (error) {
@@ -62,31 +137,5 @@ class InMemoryCache {
 
       return HashMap<String, dynamic>();
     }
-  }
-
-  bool hasEntity(String key) => _inMemoryCache.containsKey(key);
-
-  void save() async {
-    await _writeToStorage();
-  }
-
-  void restore() async {
-    _inMemoryCache = await _readFromStorage();
-  }
-
-  dynamic read(String key) {
-    if (hasEntity(key)) {
-      return _inMemoryCache[key];
-    }
-
-    return null;
-  }
-
-  void write(String key, dynamic value) {
-    _inMemoryCache[key] = value;
-  }
-
-  void reset() {
-    _inMemoryCache.clear();
   }
 }
